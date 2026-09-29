@@ -8,34 +8,47 @@ struct CandidateView: View {
     @ObservedObject var appModel: AppModel
 
     private var visibleRecords: [ClipRecord] { candidate.filteredRecords }
-    private let keyboardHint = "↑↓ 选择  ↩ 粘贴  esc 取消"
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            searchField
-                .padding(.horizontal, 10)
-                .padding(.bottom, 8)
-            candidates
-            footer
+    private var keyboardHint: String {
+        if candidate.selectedRecord?.kind == .image && candidate.query.isEmpty {
+            return candidate.isImagePreviewExpanded ? "↑↓ 换图  空格收起  ↩ 粘贴" : "↑↓ 选择  空格预览  ↩ 粘贴"
         }
-        .padding(.vertical, 4)
-        .frame(width: 340, height: 330)
-        .background {
-            ZStack {
-                Color(nsColor: .windowBackgroundColor)
-                if let image = appModel.backgroundImage {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 340, height: 330)
-                        .clipped()
-                        .opacity(appModel.backgroundOpacity)
+        return "↑↓ 选择  ↩ 粘贴  esc 取消"
+    }
+    var body: some View {
+        GeometryReader { geometry in
+            let heights = CandidateLayout.contentHeights(for: geometry.size.height, isImagePreviewExpanded: candidate.isImagePreviewExpanded)
+            VStack(spacing: 0) {
+                header
+                searchField
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
+                candidates
+                    .frame(height: heights.list)
+                if candidate.isImagePreviewExpanded, let record = candidate.selectedRecord {
+                    CandidateImageDetail(record: record) { _ = candidate.closeImagePreview() }
+                        .id(record.id)
+                        .frame(height: heights.preview)
+                }
+                footer
+            }
+            .padding(.vertical, 4)
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .background {
+                ZStack {
+                    Color(nsColor: .windowBackgroundColor)
+                    if let image = appModel.backgroundImage {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .clipped()
+                            .opacity(appModel.backgroundOpacity)
+                    }
                 }
             }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.12), lineWidth: 1))
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.12), lineWidth: 1))
         .tint(appModel.accent)
         .preferredColorScheme(appModel.appearance.colorScheme)
         .accessibilityIdentifier("clipboard-candidates")
@@ -123,56 +136,82 @@ struct CandidateView: View {
                 }
             }
         }
-        .frame(height: 220)
     }
 
     private func candidateRow(_ record: ClipRecord) -> some View {
         let selected = candidate.selectedID == record.id
         let foreground: Color = selected ? appModel.onAccent : .primary
-        return Button { candidate.choose(record) } label: {
-            HStack(spacing: 9) {
-                Image(systemName: record.isLink ? "link" : record.kind.icon)
-                    .font(.system(size: 13))
-                    .frame(width: 18)
-                    .foregroundStyle(selected ? foreground : appModel.accent)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(record.title)
-                        .font(.system(size: 12, weight: selected ? .medium : .regular))
-                        .lineLimit(1)
-                    HStack(spacing: 5) {
-                        Text(record.sourceApp).lineLimit(1)
-                        Text("·")
-                        Text(record.lastUsedAt, style: .time)
-                        if record.isPinned {
-                            Image(systemName: "pin.fill")
-                                .font(.system(size: 8))
-                        }
+        return HStack(spacing: 5) {
+            Button { candidate.choose(record) } label: {
+                HStack(spacing: 9) {
+                    if record.kind == .image {
+                        CandidateImageThumbnail(record: record)
+                    } else {
+                        Image(systemName: record.isLink ? "link" : record.kind.icon)
+                            .font(.system(size: 13))
+                            .frame(width: 18)
+                            .foregroundStyle(selected ? foreground : appModel.accent)
+                            .accessibilityHidden(true)
                     }
-                    .font(.system(size: 9))
-                    .foregroundStyle(selected ? foreground.opacity(0.85) : Color.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(record.title)
+                            .font(.system(size: 12, weight: selected ? .medium : .regular))
+                            .lineLimit(1)
+                        HStack(spacing: 5) {
+                            Text(record.sourceApp).lineLimit(1)
+                            Text("·")
+                            Text(record.lastUsedAt, style: .time)
+                            if record.isPinned {
+                                Image(systemName: "pin.fill")
+                                    .font(.system(size: 8))
+                            }
+                        }
+                        .font(.system(size: 9))
+                        .foregroundStyle(selected ? foreground.opacity(0.85) : Color.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    if selected {
+                        Image(systemName: "return")
+                            .font(.system(size: 11))
+                            .foregroundStyle(foreground.opacity(0.85))
+                            .accessibilityHidden(true)
+                    }
                 }
-                Spacer(minLength: 0)
-                if selected {
-                    Image(systemName: "return")
-                        .font(.system(size: 11))
-                        .foregroundStyle(foreground.opacity(0.85))
-                        .accessibilityHidden(true)
-                }
+                .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .foregroundStyle(foreground)
-            .padding(.horizontal, 9)
-            .frame(height: 42)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? appModel.accent : Color(nsColor: .windowBackgroundColor).opacity(0.72), in: RoundedRectangle(cornerRadius: 7))
-            .contentShape(RoundedRectangle(cornerRadius: 7))
-            .padding(.vertical, 1)
+            .buttonStyle(.plain)
+            .focusable(false)
+            .accessibilityLabel("\(record.title)，\(record.kind.label)，来自 \(record.sourceApp)\(record.isPinned ? "，已收藏" : "")")
+            .accessibilityHint("粘贴到原应用")
+            .accessibilityAddTraits(selected ? .isSelected : [])
+            if record.kind == .image {
+                Button {
+                    let wasExpandedSelection = selected && candidate.isImagePreviewExpanded
+                    candidate.selectedID = record.id
+                    if wasExpandedSelection { _ = candidate.closeImagePreview() }
+                    else if !candidate.isImagePreviewExpanded { candidate.toggleImagePreview() }
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11))
+                        .frame(width: 24, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .foregroundStyle(selected ? foreground : appModel.accent)
+                .accessibilityLabel(selected && candidate.isImagePreviewExpanded ? "收起图片预览" : "预览图片")
+                .accessibilityHint("只预览，不粘贴")
+                .accessibilityIdentifier("preview-\(record.id.uuidString)")
+                .help("预览图片，不粘贴；选中后也可按空格")
+            }
         }
-        .buttonStyle(.plain)
-        .focusable(false)
-        .accessibilityLabel("\(record.title)，\(record.kind.label)，来自 \(record.sourceApp)\(record.isPinned ? "，已收藏" : "")")
-        .accessibilityHint("粘贴到原应用")
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        .foregroundStyle(foreground)
+        .padding(.horizontal, 9)
+        .frame(height: 42)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(selected ? appModel.accent : Color(nsColor: .windowBackgroundColor).opacity(0.72), in: RoundedRectangle(cornerRadius: 7))
+        .padding(.vertical, 1)
         .accessibilityIdentifier("candidate-\(record.id.uuidString)")
     }
 
@@ -182,7 +221,7 @@ struct CandidateView: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .help(candidate.status.isEmpty ? "↑↓ 选择 · Fn+↑↓ 翻页 · 滚动浏览全部历史 · ↩ 粘贴 · esc 取消" : candidate.status)
+                .help(candidate.status.isEmpty ? "↑↓ 选择 · Fn+↑↓ 翻页 · 空搜索时按空格预览图片 · ↩ 粘贴 · esc 收起预览或取消" : candidate.status)
             Spacer(minLength: 2)
             Menu {
                 Button("管理历史记录…") { candidate.openLibrary?() }
@@ -200,5 +239,105 @@ struct CandidateView: View {
         }
         .padding(.horizontal, 12)
         .frame(height: 34)
+    }
+}
+
+private struct CandidateImageThumbnail: View {
+    let record: ClipRecord
+    @StateObject private var preview = ClipboardImagePreviewModel()
+
+    var body: some View {
+        ZStack {
+            ImageTransparencyGrid()
+            switch preview.state {
+            case .loading:
+                ProgressView().controlSize(.mini)
+            case .unavailable:
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 16))
+                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+            case .ready(let content):
+                Image(nsImage: content.image)
+                    .resizable()
+                    .interpolation(.medium)
+                    .scaledToFit()
+            }
+        }
+        .frame(width: 34, height: 34)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.primary.opacity(0.15), lineWidth: 0.5))
+        .accessibilityHidden(true)
+        .task(id: record.id) { await preview.load(record: record, maxPixelSize: 128) }
+    }
+}
+
+private struct CandidateImageDetail: View {
+    let record: ClipRecord
+    let onClose: () -> Void
+    @StateObject private var preview = ClipboardImagePreviewModel()
+
+    var body: some View {
+        VStack(spacing: 5) {
+            HStack(spacing: 6) {
+                Text("图片预览").fontWeight(.medium)
+                if case .ready(let content) = preview.state {
+                    Text("\(content.pixelWidth) × \(content.pixelHeight)")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark").frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .accessibilityLabel("收起图片预览")
+                .help("收起图片预览（Esc）")
+            }
+            .font(.system(size: 10))
+            ZStack {
+                ImageTransparencyGrid()
+                switch preview.state {
+                case .loading:
+                    ProgressView("正在加载图片…").controlSize(.small)
+                case .unavailable:
+                    VStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle")
+                        Text("无法预览这张图片").font(.system(size: 11))
+                        Text("仍可按回车粘贴原始内容").font(.system(size: 10))
+                    }
+                    .foregroundStyle(.secondary)
+                case .ready(let content):
+                    Image(nsImage: content.image)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .accessibilityLabel("所选剪贴记录的图片预览，\(content.pixelWidth) 乘 \(content.pixelHeight) 像素")
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.1), lineWidth: 1))
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 5)
+        .padding(.bottom, 3)
+        .accessibilityIdentifier("candidate-image-preview")
+        .task(id: record.id) { await preview.load(record: record, maxPixelSize: 640) }
+    }
+}
+
+/// Neutral checks keep transparent white or dark images visible in either theme.
+private struct ImageTransparencyGrid: View {
+    var body: some View {
+        Canvas { context, size in
+            let step: CGFloat = 8
+            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(white: 0.96)))
+            for row in 0..<Int(ceil(size.height / step)) {
+                for column in 0..<Int(ceil(size.width / step)) where (row + column).isMultiple(of: 2) {
+                    context.fill(Path(CGRect(x: CGFloat(column) * step, y: CGFloat(row) * step, width: step, height: step)), with: .color(Color(white: 0.86)))
+                }
+            }
+        }
+        .accessibilityHidden(true)
     }
 }

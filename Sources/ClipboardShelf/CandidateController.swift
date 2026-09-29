@@ -29,7 +29,7 @@ final class CandidateController: NSObject, NSWindowDelegate {
     init(model: AppModel) {
         self.model = model
         super.init()
-        panel = CandidatePanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 330), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel = CandidatePanel(contentRect: NSRect(origin: .zero, size: CandidateLayout.size(isImagePreviewExpanded: false)), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = false
         panel.hidesOnDeactivate = false
@@ -44,6 +44,7 @@ final class CandidateController: NSObject, NSWindowDelegate {
         panel.contentView = NSHostingView(rootView: CandidateView(candidate: candidate, appModel: model))
         candidate.onCommit = { [weak self] in self?.commit($0) }
         candidate.onCancel = { [weak self] in self?.dismiss() }
+        candidate.onPreviewChanged = { [weak self] in self?.resizeForPreview() }
         candidate.openLibrary = { [weak self] in self?.dismiss(); self?.openLibrary?() }
         candidate.openThemes = { [weak self] in self?.dismiss(); self?.openThemes?() }
     }
@@ -99,7 +100,7 @@ final class CandidateController: NSObject, NSWindowDelegate {
         if model.isDemo { candidate.status = "演示 · 独立剪贴板" }
         let anchor = Self.caretRect(focus: targetFocus) ?? NSRect(origin: NSEvent.mouseLocation, size: NSSize(width: 1, height: 18))
         let screen = NSScreen.screens.first { $0.frame.contains(NSPoint(x: anchor.midX, y: anchor.midY)) } ?? NSScreen.main ?? NSScreen.screens.first
-        if let screen { panel.setFrame(CandidatePlacement.frame(anchor: anchor, size: NSSize(width: 340, height: 330), visibleFrame: screen.visibleFrame), display: false) }
+        if let screen { panel.setFrame(CandidatePlacement.frame(anchor: anchor, size: CandidateLayout.size(isImagePreviewExpanded: false), visibleFrame: screen.visibleFrame), display: false) }
         panel.appearance = model.appearance.nsAppearance
         // AX queries and decoding can outlive the original foreground application.
         guard model.clipboard.changeCount == clipboardVersion else { return }
@@ -119,6 +120,7 @@ final class CandidateController: NSObject, NSWindowDelegate {
     func dismiss() {
         cancelPendingPresentation()
         showing = false
+        candidate.closeImagePreview()
         sessionID = UUID()
         panel?.orderOut(nil)
         for monitor in [keyMonitor, localMouseMonitor, outsideMouseMonitor] {
@@ -136,11 +138,24 @@ final class CandidateController: NSObject, NSWindowDelegate {
         presentationToken = UUID()
     }
 
+    private func resizeForPreview() {
+        guard showing, let screen = panel.screen ?? NSScreen.main else { return }
+        let frame = CandidatePlacement.resizedFrame(
+            from: panel.frame,
+            size: CandidateLayout.size(isImagePreviewExpanded: candidate.isImagePreviewExpanded),
+            visibleFrame: screen.visibleFrame
+        )
+        panel.setFrame(frame, display: true)
+    }
+
     private func installMonitors() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.showing, event.window === self.panel else { return event }
             // The input method owns navigation and Enter while composing Chinese, etc.
             if let editor = self.panel.firstResponder as? NSTextView, editor.hasMarkedText() { return event }
+            if event.keyCode == 49,
+               event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+               self.candidate.handlePreviewSpace(isRepeat: event.isARepeat) { return nil }
             guard event.modifierFlags.intersection([.control, .option, .shift]).isEmpty else { return event }
             switch event.keyCode {
             case 125: self.candidate.moveSelection(1); return nil
@@ -148,7 +163,7 @@ final class CandidateController: NSObject, NSWindowDelegate {
             case 121: self.candidate.moveSelection(5); return nil
             case 116: self.candidate.moveSelection(-5); return nil
             case 36, 76: self.candidate.commit(); return nil
-            case 53: self.dismiss(); return nil
+            case 53: self.candidate.cancel(); return nil
             default: return event
             }
         }

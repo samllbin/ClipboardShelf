@@ -11,7 +11,159 @@ private func candidateRecord(_ text: String, source: String = "Test Editor") -> 
     )
 }
 
+private func candidateImage(_ name: String) -> ClipRecord {
+    ClipRecord(
+        sourceApp: name,
+        items: [ClipItem(representations: ["public.png": Data(name.utf8)])],
+        text: "",
+        kind: .image
+    )
+}
+
 final class CandidateModelTests: XCTestCase {
+    func testImagePreviewDoesNotCommitOrModifyHistoryAndEscapeClosesItBeforeCancelling() async {
+        await MainActor.run {
+            let image = candidateImage("Image App")
+            let history = [image, candidateRecord("text")]
+            let model = CandidateModel()
+            var committed: [ClipRecord] = []
+            var cancellations = 0
+            var previewChanges = 0
+            model.onCommit = { committed.append($0) }
+            model.onCancel = { cancellations += 1 }
+            model.onPreviewChanged = { previewChanges += 1 }
+            model.prepare(history: history, current: nil, hasCurrent: false)
+
+            model.toggleImagePreview()
+
+            XCTAssertEqual(model.selectedRecord, image)
+            XCTAssertTrue(model.isImagePreviewExpanded)
+            XCTAssertEqual(previewChanges, 1)
+            XCTAssertTrue(committed.isEmpty)
+            XCTAssertEqual(model.records, history)
+
+            model.cancel()
+            XCTAssertFalse(model.isImagePreviewExpanded)
+            XCTAssertEqual(cancellations, 0)
+            XCTAssertEqual(previewChanges, 2)
+            model.cancel()
+            XCTAssertEqual(cancellations, 1)
+            XCTAssertTrue(committed.isEmpty)
+        }
+    }
+
+    func testExpandedPreviewFollowsImageSelectionAndCollapsesForText() async {
+        await MainActor.run {
+            let first = candidateImage("First Image")
+            let second = candidateImage("Second Image")
+            let text = candidateRecord("text")
+            let model = CandidateModel()
+            model.prepare(history: [first, second, text], current: nil, hasCurrent: false)
+            model.toggleImagePreview()
+
+            model.moveSelection(1)
+            XCTAssertEqual(model.selectedRecord, second)
+            XCTAssertTrue(model.isImagePreviewExpanded)
+
+            model.moveSelection(1)
+            XCTAssertEqual(model.selectedRecord, text)
+            XCTAssertFalse(model.isImagePreviewExpanded)
+            model.moveSelection(-1)
+            XCTAssertFalse(model.isImagePreviewExpanded, "Returning to an image must not reopen a dismissed preview.")
+        }
+    }
+
+    func testPreviewCanOnlyOpenForAnImage() async {
+        await MainActor.run {
+            let model = CandidateModel()
+            model.prepare(history: [candidateRecord("text")], current: nil, hasCurrent: false)
+            model.toggleImagePreview()
+            XCTAssertFalse(model.isImagePreviewExpanded)
+            XCTAssertFalse(model.handlePreviewSpace(isRepeat: false))
+            model.selectedID = nil
+            model.toggleImagePreview()
+            XCTAssertNil(model.selectedRecord)
+            XCTAssertFalse(model.isImagePreviewExpanded)
+        }
+    }
+
+    func testPreviewSpaceRequiresExactlyEmptySearchAndIgnoresRepeats() async {
+        await MainActor.run {
+            let model = CandidateModel()
+            model.prepare(history: [candidateImage("Image App")], current: nil, hasCurrent: false)
+
+            XCTAssertTrue(model.handlePreviewSpace(isRepeat: false))
+            XCTAssertTrue(model.isImagePreviewExpanded)
+            XCTAssertTrue(model.handlePreviewSpace(isRepeat: true))
+            XCTAssertTrue(model.isImagePreviewExpanded)
+            XCTAssertTrue(model.handlePreviewSpace(isRepeat: false))
+            XCTAssertFalse(model.isImagePreviewExpanded)
+
+            model.query = "Image"
+            XCTAssertFalse(model.handlePreviewSpace(isRepeat: false), "A space between search terms must stay in the search field.")
+            model.query = " "
+            XCTAssertFalse(model.handlePreviewSpace(isRepeat: false), "Whitespace is still intentional search input.")
+            XCTAssertFalse(model.isImagePreviewExpanded)
+        }
+    }
+
+    func testSearchAndRecordRemovalClosePreviewWhenSelectionIsNoLongerAnImage() async {
+        await MainActor.run {
+            let image = candidateImage("Image App")
+            let text = candidateRecord("text")
+            let model = CandidateModel()
+            model.prepare(history: [image, text], current: nil, hasCurrent: false)
+            model.toggleImagePreview()
+
+            model.query = "text"
+            XCTAssertEqual(model.selectedRecord, text)
+            XCTAssertFalse(model.isImagePreviewExpanded)
+
+            model.query = ""
+            model.selectedID = image.id
+            model.toggleImagePreview()
+            model.records = []
+            XCTAssertNil(model.selectedRecord)
+            XCTAssertFalse(model.isImagePreviewExpanded)
+        }
+    }
+
+    func testNewPresentationResetsImagePreviewAndSupportsNativeImage() async {
+        await MainActor.run {
+            let image = candidateImage("Image App")
+            let model = CandidateModel()
+            model.prepare(history: [image], current: nil, hasCurrent: false)
+            model.toggleImagePreview()
+            model.prepare(history: [image], current: image, hasCurrent: true)
+
+            XCTAssertFalse(model.isImagePreviewExpanded)
+            XCTAssertEqual(model.selectedRecord?.id, model.nativeClipboardID)
+            XCTAssertEqual(model.selectedRecord?.kind, .image)
+            XCTAssertEqual(model.selectedRecord?.items, image.items)
+            model.toggleImagePreview()
+            XCTAssertTrue(model.isImagePreviewExpanded)
+            XCTAssertTrue(model.closeImagePreview())
+            XCTAssertFalse(model.closeImagePreview())
+        }
+    }
+
+    func testCommitFromExpandedPreviewStillCommitsOnlySelectedImageOnce() async {
+        await MainActor.run {
+            let first = candidateImage("First Image")
+            let second = candidateImage("Second Image")
+            let model = CandidateModel()
+            var committed: [ClipRecord] = []
+            model.onCommit = { committed.append($0) }
+            model.prepare(history: [first, second], current: nil, hasCurrent: false)
+            model.toggleImagePreview()
+            model.moveSelection(1)
+            model.commit()
+
+            XCTAssertEqual(committed, [second])
+            XCTAssertEqual(model.records, [first, second])
+        }
+    }
+
     func testUnavailableSnapshotStillOffersNativeClipboardBeforeHistory() async throws {
         try await MainActor.run {
             let history = [candidateRecord("first saved item"), candidateRecord("older item")]
@@ -196,6 +348,62 @@ final class CandidateModelTests: XCTestCase {
 final class CandidatePlacementTests: XCTestCase {
     private let panelSize = NSSize(width: 340, height: 330)
     private let mainVisibleFrame = NSRect(x: 0, y: 24, width: 1440, height: 1032)
+
+    func testContentHeightsShareAvailableSpaceWithoutExceedingWindowHeight() {
+        let expanded = CandidateLayout.contentHeights(for: 510, isImagePreviewExpanded: true)
+        XCTAssertEqual(expanded.list, 220)
+        XCTAssertEqual(expanded.preview, 180)
+        XCTAssertEqual(expanded.list + expanded.preview + 110, 510)
+
+        let collapsed = CandidateLayout.contentHeights(for: 330, isImagePreviewExpanded: false)
+        XCTAssertEqual(collapsed.list, 220)
+        XCTAssertEqual(collapsed.preview, 0)
+        XCTAssertEqual(collapsed.list + collapsed.preview + 110, 330)
+
+        let small = CandidateLayout.contentHeights(for: 284, isImagePreviewExpanded: true)
+        XCTAssertEqual(small.list, 87)
+        XCTAssertEqual(small.preview, 87)
+        XCTAssertEqual(small.list + small.preview + 110, 284)
+
+        let noContentRoom = CandidateLayout.contentHeights(for: 80, isImagePreviewExpanded: true)
+        XCTAssertEqual(noContentRoom.list, 0)
+        XCTAssertEqual(noContentRoom.preview, 0)
+    }
+
+    func testPreviewResizePreservesTopLeftPositionWhenThereIsRoom() {
+        let collapsed = NSRect(x: 200, y: 400, width: 340, height: 330)
+        let expanded = CandidatePlacement.resizedFrame(
+            from: collapsed,
+            size: CandidateLayout.size(isImagePreviewExpanded: true),
+            visibleFrame: mainVisibleFrame
+        )
+        XCTAssertEqual(expanded, NSRect(x: 200, y: 220, width: 340, height: 510))
+        XCTAssertEqual(
+            CandidatePlacement.resizedFrame(from: expanded, size: CandidateLayout.size(isImagePreviewExpanded: false), visibleFrame: mainVisibleFrame),
+            collapsed
+        )
+    }
+
+    func testPreviewResizeClampsAtScreenEdges() {
+        let expanded = CandidatePlacement.resizedFrame(
+            from: NSRect(x: 1400, y: 32, width: 340, height: 330),
+            size: CandidateLayout.size(isImagePreviewExpanded: true),
+            visibleFrame: mainVisibleFrame
+        )
+        XCTAssertEqual(expanded, NSRect(x: 1092, y: 32, width: 340, height: 510))
+        XCTAssertTrue(mainVisibleFrame.contains(expanded))
+    }
+
+    func testPreviewResizeShrinksToFitSmallNegativeCoordinateDisplay() {
+        let visible = NSRect(x: -500, y: -200, width: 250, height: 300)
+        let expanded = CandidatePlacement.resizedFrame(
+            from: NSRect(x: -450, y: -100, width: 340, height: 330),
+            size: CandidateLayout.size(isImagePreviewExpanded: true),
+            visibleFrame: visible
+        )
+        XCTAssertEqual(expanded, NSRect(x: -492, y: -192, width: 234, height: 284))
+        XCTAssertTrue(visible.contains(expanded))
+    }
 
     func testAXCoordinatesUsePrimaryScreenTopAndPreserveCaretDimensions() {
         XCTAssertEqual(
